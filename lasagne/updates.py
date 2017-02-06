@@ -66,6 +66,8 @@ import numpy as np
 
 import theano
 import theano.tensor as T
+from theano.ifelse import ifelse
+
 from . import utils
 
 __all__ = [
@@ -580,6 +582,7 @@ def adam(loss_or_grads, params, learning_rate=0.001, beta1=0.9,
            Adam: A Method for Stochastic Optimization.
            arXiv preprint arXiv:1412.6980.
     """
+    print loss_or_grads
     all_grads = get_or_compute_grads(loss_or_grads, params)
     t_prev = theano.shared(utils.floatX(0.))
     updates = OrderedDict()
@@ -606,7 +609,7 @@ def adam(loss_or_grads, params, learning_rate=0.001, beta1=0.9,
         updates[param] = param - step
 
     updates[t_prev] = t
-    return updates
+    return updates, t_prev
 
 
 def adamax(loss_or_grads, params, learning_rate=0.002, beta1=0.9,
@@ -670,6 +673,113 @@ def adamax(loss_or_grads, params, learning_rate=0.002, beta1=0.9,
     updates[t_prev] = t
     return updates
 
+
+def update_eve_other_itr(updates, f_hat, f_prev, d, beta3, k, K, div_res):
+    lower_bound = T.switch(T.ge(f_prev, f_hat), k + 1, 1 / (K + 1))
+    upper_bound = T.switch(T.ge(f_prev, f_hat), K + 1, 1 / (k + 1))
+    updates[div_res] = f_prev / f_hat
+    c = T.minimum(T.maximum(lower_bound, f_prev / f_hat), upper_bound)
+    f_hat_curr = c * f_hat
+    r = T.abs_(f_hat_curr - f_hat) / T.minimum(f_hat_curr, f_hat)
+
+    updates[f_hat] = f_hat_curr
+    updates[d] = beta3 * d + (1 - beta3) * r
+    return theano.shared(2.)
+
+def update_eve_first_itr(updates, f_hat, f_prev, d):
+    updates[f_hat] = f_prev
+    updates[d] = 1.0
+    return theano.shared(1.)
+
+def eve(loss_or_grads, params, f_prev, learning_rate=0.001, beta1=0.9,
+         beta2=0.999, beta3=0.999, epsilon=1e-8, k=0.1, K=10):
+    """Adam updates
+
+    Adam updates implemented as in [1]_.
+
+    Parameters
+    ----------
+    loss_or_grads : symbolic expression or list of expressions
+        A scalar loss expression, or a list of gradient expressions
+    params : list of shared variables
+        The variables to generate update expressions for
+    learning_rate : float
+        Learning rate
+    beta1 : float
+        Exponential decay rate for the first moment estimates.
+    beta2 : float
+        Exponential decay rate for the second moment estimates.
+    epsilon : float
+        Constant for numerical stability.
+
+    Returns
+    -------
+    OrderedDict
+        A dictionary mapping each parameter to its update expression
+
+    Notes
+    -----
+    The paper [1]_ includes an additional hyperparameter lambda. This is only
+    needed to prove convergence of the algorithm and has no practical use
+    (personal communication with the authors), it is therefore omitted here.
+
+    References
+    ----------
+    .. [1] Kingma, Diederik, and Jimmy Ba (2014):
+           Adam: A Method for Stochastic Optimization.
+           arXiv preprint arXiv:1412.6980.
+    """
+    all_grads = get_or_compute_grads(loss_or_grads, params)
+    t_prev = theano.shared(0.)
+    f_hat = theano.shared(0.)
+    d = theano.shared(1.)
+    div_res = theano.shared(0.)
+    test = theano.shared(0.)
+    updates = OrderedDict()
+
+    # Using theano constant to prevent upcasting of float32
+    one = T.constant(1)
+
+    t = t_prev + 1
+    a_t = learning_rate*T.sqrt(one-beta2**t)/(one-beta1**t)
+
+    # if T.gt(t_prev, 1):
+    #     lower_bound = T.switch(T.ge(f_prev, f_hat), k + 1, 1 / (K + 1))
+    #     upper_bound = T.switch(T.ge(f_prev, f_hat), K + 1, 1 / (k + 1))
+    #
+    #     div_res = f_prev / f_hat
+    #     c = T.minimum(T.maximum(lower_bound, f_prev / f_hat), upper_bound)
+    #     f_hat_curr = c * f_hat
+    #     r = T.abs_(f_hat_curr - f_hat) / T.minimum(f_hat_curr, f_hat)
+    #
+    #     updates[f_hat] = f_hat_curr
+    #     updates[d] = beta3 * d + (1 - beta3) * r
+    #     updates[test] = 2
+    # else:
+    #     updates[f_hat] = f_prev
+    #     updates[d] = 1.0
+    #     updates[test] = 1
+# update_eve_other_itr(updates, f_hat, f_prev, d, beta3, k, K)
+    updates[test] = ifelse(T.gt(t, 3), update_eve_other_itr(updates, f_hat, f_prev, d, beta3, k, K, div_res), \
+           update_eve_first_itr(updates, f_hat, f_prev, d))
+
+    for param, g_t in zip(params, all_grads):
+        value = param.get_value(borrow=True)
+        m_prev = theano.shared(np.zeros(value.shape, dtype=value.dtype),
+                               broadcastable=param.broadcastable)
+        v_prev = theano.shared(np.zeros(value.shape, dtype=value.dtype),
+                               broadcastable=param.broadcastable)
+
+        m_t = beta1*m_prev + (one-beta1)*g_t
+        v_t = beta2*v_prev + (one-beta2)*g_t**2
+        step = a_t * m_t / (d * (T.sqrt(v_t) + epsilon))
+
+        updates[m_prev] = m_t
+        updates[v_prev] = v_t
+        updates[param] = param - step
+
+    updates[t_prev] = t
+    return updates, f_hat, div_res, t_prev, test
 
 def norm_constraint(tensor_var, max_norm, norm_axes=None, epsilon=1e-7):
     """Max weight norm constraints and gradient clipping

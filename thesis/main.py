@@ -1,7 +1,9 @@
 #code adapted from minst.py in Lasagne
 import numpy as np
 import theano
-import theano.tensor as T
+from theano import tensor as T
+import theano.printing as pr
+
 import lasagne
 import time
 
@@ -22,7 +24,7 @@ def load_dataset():
         # The labels are vectors of integers now, that's exactly what we want.
         return data
 
-    root_datatsets = '../../../datasets/mnist/'
+    root_datatsets = '../../datasets/mnist/'
 
     X_train = load_mnist_images(root_datatsets + 'train-images-idx3-ubyte.gz')
     y_train = load_mnist_labels(root_datatsets + 'train-labels-idx1-ubyte.gz')
@@ -86,7 +88,12 @@ def main(num_epochs=500):
     loss = lasagne.objectives.categorical_crossentropy(prediction, target_var)
     loss = loss.mean()
     params = lasagne.layers.get_all_params(network, trainable=True)
-    updates = lasagne.updates.nesterov_momentum(loss, params, learning_rate=0.01, momentum=0.9)
+
+    f_prev = theano.shared(0.)
+    loss_prev = T.dscalar('loss_prev')
+
+    updates, f_hat, div_res, t_prev, test = lasagne.updates.eve(loss, params, f_prev, learning_rate=0.01)
+    updates[f_prev] = loss_prev
 
     # testing
     test_prediction = lasagne.layers.get_output(network, deterministic=True)
@@ -94,7 +101,7 @@ def main(num_epochs=500):
     test_loss = test_loss.mean()
     test_acc = T.mean(T.eq(T.argmax(test_prediction, axis=1), target_var), dtype=theano.config.floatX)
 
-    train_fn = theano.function([input_var, target_var], loss, updates=updates)
+    train_fn = theano.function([input_var, target_var, loss_prev], loss, updates=updates, mode=theano.compile.get_default_mode().excluding('scanOp_pushout_nonseqs_ops'))
 
     val_fn = theano.function([input_var, target_var], [test_loss, test_acc])
 
@@ -104,10 +111,19 @@ def main(num_epochs=500):
         train_err = 0
         train_batches = 0
         start_time = time.time()
+        batch_loss = 0
         for batch in iterate_minibatches(X_train, y_train, 500, shuffle=True):
             inputs, targets = batch
             # print(inputs.shape, targets.shape)
-            train_err += train_fn(inputs, targets)
+            batch_loss = train_fn(inputs, targets, batch_loss)
+            # print 'f_pre: ', f_prev.eval()
+            # print 'f_hat: ', f_hat.eval()
+            # print 'div: ', div_res.eval()
+            # print 'loss: ', batch_loss
+            # print 't_prev', t_prev.eval()
+            # print 'test', test.eval()
+            # print '-------'
+            train_err += batch_loss
             train_batches += 1
 
         # And a full pass over the validation data:
