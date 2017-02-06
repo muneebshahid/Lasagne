@@ -89,11 +89,10 @@ def main(num_epochs=500):
     loss = loss.mean()
     params = lasagne.layers.get_all_params(network, trainable=True)
 
-    f_prev = theano.shared(0.)
-    loss_prev = T.dscalar('loss_prev')
 
-    updates, f_hat, div_res, t_prev, test = lasagne.updates.eve(loss, params, f_prev, learning_rate=0.01)
-    updates[f_prev] = loss_prev
+    loss_prev = T.dscalar('loss_prev')
+    updates, f_hat, div_res, t_prev, test = lasagne.updates.eve(loss, params, loss_prev, learning_rate=0.01)
+
 
     # testing
     test_prediction = lasagne.layers.get_output(network, deterministic=True)
@@ -101,7 +100,7 @@ def main(num_epochs=500):
     test_loss = test_loss.mean()
     test_acc = T.mean(T.eq(T.argmax(test_prediction, axis=1), target_var), dtype=theano.config.floatX)
 
-    train_fn = theano.function([input_var, target_var, loss_prev], loss, updates=updates, mode=theano.compile.get_default_mode().excluding('scanOp_pushout_nonseqs_ops'))
+    train_fn = theano.function([input_var, target_var, loss_prev], loss, updates=updates)
 
     val_fn = theano.function([input_var, target_var], [test_loss, test_acc])
 

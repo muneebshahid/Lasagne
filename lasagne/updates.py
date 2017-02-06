@@ -691,7 +691,7 @@ def update_eve_first_itr(updates, f_hat, f_prev, d):
     updates[d] = 1.0
     return theano.shared(1.)
 
-def eve(loss_or_grads, params, f_prev, learning_rate=0.001, beta1=0.9,
+def eve(loss_or_grads, params, loss_prev, learning_rate=0.001, beta1=0.9,
          beta2=0.999, beta3=0.999, epsilon=1e-8, k=0.1, K=10):
     """Adam updates
 
@@ -731,6 +731,7 @@ def eve(loss_or_grads, params, f_prev, learning_rate=0.001, beta1=0.9,
     """
     all_grads = get_or_compute_grads(loss_or_grads, params)
     t_prev = theano.shared(0.)
+    f_prev = theano.shared(0.)
     f_hat = theano.shared(0.)
     d = theano.shared(1.)
     div_res = theano.shared(0.)
@@ -779,6 +780,7 @@ def eve(loss_or_grads, params, f_prev, learning_rate=0.001, beta1=0.9,
         updates[param] = param - step
 
     updates[t_prev] = t
+    updates[f_prev] = loss_prev
     return updates, f_hat, div_res, t_prev, test
 
 def norm_constraint(tensor_var, max_norm, norm_axes=None, epsilon=1e-7):
