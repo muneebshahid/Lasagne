@@ -730,12 +730,12 @@ def eve(loss_or_grads, params, loss_prev, learning_rate=0.001, beta1=0.9,
            arXiv preprint arXiv:1412.6980.
     """
     all_grads = get_or_compute_grads(loss_or_grads, params)
-    t_prev = theano.shared(0.)
-    f_prev = theano.shared(0.)
-    f_hat = theano.shared(0.)
-    d = theano.shared(1.)
-    div_res = theano.shared(0.)
-    test = theano.shared(0.)
+    t_prev = theano.shared(utils.floatX(0.), name='t_prev')
+    f_prev = theano.shared(utils.floatX(0.), name='f_prev')
+    f_hat = theano.shared(utils.floatX(0.), name='f_hat')
+    d = theano.shared(utils.floatX(1.), name='d')
+    div_res = theano.shared(utils.floatX(0.), name='div_res')
+    test = theano.shared(utils.floatX(0.), name='test')
     updates = OrderedDict()
 
     # Using theano constant to prevent upcasting of float32
@@ -760,7 +760,7 @@ def eve(loss_or_grads, params, loss_prev, learning_rate=0.001, beta1=0.9,
     #     updates[f_hat] = f_prev
     #     updates[d] = 1.0
     #     updates[test] = 1
-# update_eve_other_itr(updates, f_hat, f_prev, d, beta3, k, K)
+
     updates[test] = ifelse(T.gt(t, 3), update_eve_other_itr(updates, f_hat, f_prev, d, beta3, k, K, div_res), \
            update_eve_first_itr(updates, f_hat, f_prev, d))
 
@@ -781,7 +781,7 @@ def eve(loss_or_grads, params, loss_prev, learning_rate=0.001, beta1=0.9,
 
     updates[t_prev] = t
     updates[f_prev] = loss_prev
-    return updates, f_hat, div_res, t_prev, test
+    return updates
 
 def norm_constraint(tensor_var, max_norm, norm_axes=None, epsilon=1e-7):
     """Max weight norm constraints and gradient clipping
