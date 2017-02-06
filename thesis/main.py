@@ -51,6 +51,7 @@ def iterate_minibatches(inputs, targets, batchsize, shuffle=False):
             excerpt = slice(start_idx, start_idx + batchsize)
         yield inputs[excerpt], targets[excerpt]
 
+
 def build_cnn(input_var):
     network = lasagne.layers.InputLayer(shape=(None, 1, 28, 28), input_var=input_var)
 
@@ -91,7 +92,7 @@ def main(num_epochs=500):
 
 
     loss_prev = T.dscalar('loss_prev')
-    updates, f_hat, div_res, t_prev, test = lasagne.updates.eve(loss, params, loss_prev, learning_rate=0.01)
+    updates = lasagne.updates.eve(loss, params, loss_prev, learning_rate=0.01)
 
 
     # testing
