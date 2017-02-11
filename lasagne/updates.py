@@ -582,7 +582,6 @@ def adam(loss_or_grads, params, learning_rate=0.001, beta1=0.9,
            Adam: A Method for Stochastic Optimization.
            arXiv preprint arXiv:1412.6980.
     """
-    print loss_or_grads
     all_grads = get_or_compute_grads(loss_or_grads, params)
     t_prev = theano.shared(utils.floatX(0.))
     updates = OrderedDict()
@@ -609,7 +608,7 @@ def adam(loss_or_grads, params, learning_rate=0.001, beta1=0.9,
         updates[param] = param - step
 
     updates[t_prev] = t
-    return updates, t_prev
+    return updates
 
 
 def adamax(loss_or_grads, params, learning_rate=0.002, beta1=0.9,
@@ -673,6 +672,10 @@ def adamax(loss_or_grads, params, learning_rate=0.002, beta1=0.9,
     updates[t_prev] = t
     return updates
 
+def update_eve_first_itr(updates, f_hat, f_prev, d):
+    updates[f_hat] = f_prev
+    updates[d] = 1.0
+    return theano.shared(1.)
 
 def update_eve_other_itr(updates, f_hat, f_prev, d, beta3, k, K, div_res):
     lower_bound = T.switch(T.ge(f_prev, f_hat), k + 1, 1 / (K + 1))
@@ -685,11 +688,6 @@ def update_eve_other_itr(updates, f_hat, f_prev, d, beta3, k, K, div_res):
     updates[f_hat] = f_hat_curr
     updates[d] = beta3 * d + (1 - beta3) * r
     return theano.shared(2.)
-
-def update_eve_first_itr(updates, f_hat, f_prev, d):
-    updates[f_hat] = f_prev
-    updates[d] = 1.0
-    return theano.shared(1.)
 
 def eve(loss_or_grads, params, loss_prev, learning_rate=0.001, beta1=0.9,
          beta2=0.999, beta3=0.999, epsilon=1e-8, k=0.1, K=10):
@@ -735,7 +733,7 @@ def eve(loss_or_grads, params, loss_prev, learning_rate=0.001, beta1=0.9,
     f_hat = theano.shared(utils.floatX(0.), name='f_hat')
     d = theano.shared(utils.floatX(1.), name='d')
     div_res = theano.shared(utils.floatX(0.), name='div_res')
-    test = theano.shared(utils.floatX(0.), name='test')
+    branch = theano.shared(0., name='branch')
     updates = OrderedDict()
 
     # Using theano constant to prevent upcasting of float32
@@ -744,24 +742,7 @@ def eve(loss_or_grads, params, loss_prev, learning_rate=0.001, beta1=0.9,
     t = t_prev + 1
     a_t = learning_rate*T.sqrt(one-beta2**t)/(one-beta1**t)
 
-    # if T.gt(t_prev, 1):
-    #     lower_bound = T.switch(T.ge(f_prev, f_hat), k + 1, 1 / (K + 1))
-    #     upper_bound = T.switch(T.ge(f_prev, f_hat), K + 1, 1 / (k + 1))
-    #
-    #     div_res = f_prev / f_hat
-    #     c = T.minimum(T.maximum(lower_bound, f_prev / f_hat), upper_bound)
-    #     f_hat_curr = c * f_hat
-    #     r = T.abs_(f_hat_curr - f_hat) / T.minimum(f_hat_curr, f_hat)
-    #
-    #     updates[f_hat] = f_hat_curr
-    #     updates[d] = beta3 * d + (1 - beta3) * r
-    #     updates[test] = 2
-    # else:
-    #     updates[f_hat] = f_prev
-    #     updates[d] = 1.0
-    #     updates[test] = 1
-
-    updates[test] = ifelse(T.gt(t, 3), update_eve_other_itr(updates, f_hat, f_prev, d, beta3, k, K, div_res), \
+    updates[branch] = ifelse(T.gt(t, 3), update_eve_other_itr(updates, f_hat, f_prev, d, beta3, k, K, div_res), \
            update_eve_first_itr(updates, f_hat, f_prev, d))
 
     for param, g_t in zip(params, all_grads):
