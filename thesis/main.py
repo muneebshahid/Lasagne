@@ -6,7 +6,27 @@ import theano.printing as pr
 
 import lasagne
 import time
+import pickle
 
+from lasagne.layers import Conv2DLayer as ConvLayer
+#from lasagne.layers.dnn import Conv2DDNNLayer as ConvLayer
+from lasagne.layers import ElemwiseSumLayer
+from lasagne.layers import InputLayer
+from lasagne.layers import DenseLayer
+from lasagne.layers import GlobalPoolLayer
+from lasagne.layers import PadLayer
+from lasagne.layers import ExpressionLayer
+from lasagne.layers import NonlinearityLayer
+from lasagne.nonlinearities import softmax, rectify
+from lasagne.layers import batch_norm
+
+
+def unpickle(file):
+    import cPickle
+    fo = open(file, 'rb')
+    dict = cPickle.load(fo)
+    fo.close()
+    return dict
 
 def load_mnist():
     import gzip
@@ -38,6 +58,48 @@ def load_mnist():
     # We just return all the arrays in order, as expected in main().
     # (It doesn't matter how we do this as long as we can read them again.)
     return X_train, y_train, X_val, y_val, X_test, y_test
+
+
+def load_cifar10():
+    xs = []
+    ys = []
+    root_folder = '../../datasets/cifar10/'
+    for j in range(5):
+      d = unpickle(root_folder + 'cifar-10-batches-py/data_batch_'+`j+1`)
+      x = d['data']
+      y = d['labels']
+      xs.append(x)
+      ys.append(y)
+
+    d = unpickle(root_folder + 'cifar-10-batches-py/test_batch')
+    xs.append(d['data'])
+    ys.append(d['labels'])
+
+    x = np.concatenate(xs)/np.float32(255)
+    y = np.concatenate(ys)
+    x = np.dstack((x[:, :1024], x[:, 1024:2048], x[:, 2048:]))
+    x = x.reshape((x.shape[0], 32, 32, 3)).transpose(0,3,1,2)
+
+    # subtract per-pixel mean
+    pixel_mean = np.mean(x[0:50000],axis=0)
+
+    #pickle.dump(pixel_mean, open("cifar10-pixel_mean.pkl","wb"))
+    x -= pixel_mean
+
+    # create mirrored images
+    X_train = x[0:50000,:,:,:]
+    Y_train = y[0:50000]
+    X_train_flip = X_train[:,:,:,::-1]
+    Y_train_flip = Y_train
+    X_train = np.concatenate((X_train,X_train_flip), axis=0)
+    Y_train = np.concatenate((Y_train,Y_train_flip), axis=0)
+
+    X_test = x[50000:,:,:,:]
+    Y_test = y[50000:]
+
+    return lasagne.utils.floatX(X_train), Y_train.astype('int32'), \
+           None, None, \
+           lasagne.utils.floatX(X_test), Y_test.astype('int32')
 
 def iterate_minibatches(inputs, targets, batchsize, shuffle=False):
     assert len(inputs) == len(targets)
@@ -78,11 +140,75 @@ def build_cnn_mnist(input_var):
 
     return network
 
-def main(args, num_epochs=500):
-    X_train, y_train, X_val, y_val, X_test, y_test = load_mnist()
+
+def build_cnn_deep_cifar(input_var, n=5):
+    # create a residual learning building block with two stacked 3x3 convlayers as in paper
+    def residual_block(l, increase_dim=False, projection=False):
+        input_num_filters = l.output_shape[1]
+        if increase_dim:
+            first_stride = (2,2)
+            out_num_filters = input_num_filters*2
+        else:
+            first_stride = (1,1)
+            out_num_filters = input_num_filters
+
+        stack_1 = batch_norm(ConvLayer(l, num_filters=out_num_filters, filter_size=(3,3), stride=first_stride, nonlinearity=rectify, pad='same', W=lasagne.init.HeNormal(gain='relu'), flip_filters=False))
+        stack_2 = batch_norm(ConvLayer(stack_1, num_filters=out_num_filters, filter_size=(3,3), stride=(1,1), nonlinearity=None, pad='same', W=lasagne.init.HeNormal(gain='relu'), flip_filters=False))
+
+        # add shortcut connections
+        if increase_dim:
+            if projection:
+                # projection shortcut, as option B in paper
+                projection = batch_norm(ConvLayer(l, num_filters=out_num_filters, filter_size=(1,1), stride=(2,2), nonlinearity=None, pad='same', b=None, flip_filters=False))
+                block = NonlinearityLayer(ElemwiseSumLayer([stack_2, projection]),nonlinearity=rectify)
+            else:
+                # identity shortcut, as option A in paper
+                identity = ExpressionLayer(l, lambda X: X[:, :, ::2, ::2], lambda s: (s[0], s[1], s[2]//2, s[3]//2))
+                padding = PadLayer(identity, [out_num_filters//4,0,0], batch_ndim=1)
+                block = NonlinearityLayer(ElemwiseSumLayer([stack_2, padding]),nonlinearity=rectify)
+        else:
+            block = NonlinearityLayer(ElemwiseSumLayer([stack_2, l]),nonlinearity=rectify)
+
+        return block
+
+    # Building the network
+    l_in = InputLayer(shape=(None, 3, 32, 32), input_var=input_var)
+
+    # first layer, output is 16 x 32 x 32
+    l = batch_norm(ConvLayer(l_in, num_filters=16, filter_size=(3,3), stride=(1,1), nonlinearity=rectify, pad='same', W=lasagne.init.HeNormal(gain='relu'), flip_filters=False))
+
+    # first stack of residual blocks, output is 16 x 32 x 32
+    for _ in range(n):
+        l = residual_block(l)
+
+    # second stack of residual blocks, output is 32 x 16 x 16
+    l = residual_block(l, increase_dim=True)
+    for _ in range(1,n):
+        l = residual_block(l)
+
+    # third stack of residual blocks, output is 64 x 8 x 8
+    l = residual_block(l, increase_dim=True)
+    for _ in range(1,n):
+        l = residual_block(l)
+
+    # average pooling
+    l = GlobalPoolLayer(l)
+
+    # fully connected layer
+    network = DenseLayer(
+            l, num_units=10,
+            W=lasagne.init.HeNormal(),
+            nonlinearity=softmax)
+
+    return network
+
+
+def main(args):
+    X_train, Y_train, X_val, y_val, X_test, Y_test = args['dataset']
     input_var = args['input_var']
     target_var = args['target_var']
     network = args['network']
+    num_epochs = args['num_epochs']
 
     # training
     prediction = lasagne.layers.get_output(network)
@@ -90,8 +216,12 @@ def main(args, num_epochs=500):
     loss = loss.mean()
     params = lasagne.layers.get_all_params(network, trainable=True)
 
+    if args['weight_decay']:
+        all_layers = lasagne.layers.get_all_layers(network)
+        l2_penalty = lasagne.regularization.regularize_layer_params(all_layers, lasagne.regularization.l2) * 0.0001
+        loss = loss + l2_penalty
 
-    loss_prev = T.fscalar('loss_prev')
+    loss_prev = T.dscalar('loss_prev')
     if args['optim'] == 'eve':
         print 'using eve'
         updates = lasagne.updates.eve(loss, params, loss_prev)
@@ -111,34 +241,48 @@ def main(args, num_epochs=500):
 
     train_log_file_name  = args['optim'] + '.train'
     test_log_file_name  = args['optim'] + '.test'
-    print('Starting Training...')    
+
+    print('Starting Training...')
     for epoch in range(num_epochs):
+
+        # shuffle whole dataset
+        # train_indices = np.arange(100000)
+        # np.random.shuffle(train_indices)
+        # X_train = X_train[train_indices,:,:,:]
+        # Y_train = Y_train[train_indices]
+
         train_err = 0
         train_batches = 0
         start_time = time.time()
         batch_loss = 0
-        for batch in iterate_minibatches(X_train, y_train, 500, shuffle=True):
+
+        for batch in iterate_minibatches(X_train, Y_train, args['batch_size'], shuffle=True):
             inputs, targets = batch
             batch_loss = train_fn(inputs, targets, batch_loss)
             train_err += batch_loss
             train_batches += 1
 
-        # And a full pass over the validation data:
-        val_err = 0
-        val_acc = 0
-        val_batches = 0
-        for batch in iterate_minibatches(X_val, y_val, 500, shuffle=False):
-            inputs, targets = batch
-            err, acc = val_fn(inputs, targets)
-            val_err += err
-            val_acc += acc
-            val_batches += 1
+        if X_val is not None and y_val is not None:
+            # And a full pass over the validation data:
+            val_err = 0
+            val_acc = 0
+            val_batches = 0
+            for batch in iterate_minibatches(X_val, y_val, 500, shuffle=False):
+                inputs, targets = batch
+                err, acc = val_fn(inputs, targets)
+                val_err += err
+                val_acc += acc
+                val_batches += 1
+                epoch_val_loss = val_err / val_batches
+                epoch_val_acc = val_acc / val_batches * 100
+        else:
+            epoch_val_loss = 0
+            epoch_val_acc = 0
 
         # Then we print the results for this epoch:
         epoch_time_taken = time.time() - start_time
         epoch_train_loss = train_err / train_batches
-        epoch_val_loss = val_err / val_batches
-        epoch_val_acc = val_acc / val_batches * 100
+
         
         print("Epoch {} of {} took {:.3f}s".format(epoch + 1, num_epochs, epoch_time_taken))
         print("  training loss:\t\t{:.6f}".format(epoch_train_loss))
@@ -152,7 +296,7 @@ def main(args, num_epochs=500):
         test_err = 0
         test_acc = 0
         test_batches = 0
-        for batch in iterate_minibatches(X_test, y_test, 500, shuffle=False):
+        for batch in iterate_minibatches(X_test, Y_test, 500, shuffle=False):
             inputs, targets = batch
             err, acc = val_fn(inputs, targets)
             test_err += err
@@ -168,20 +312,38 @@ def main(args, num_epochs=500):
         print("--------\n")
 
 if __name__ == '__main__':
-    mnist = True
-    optim = 'adam'
+    mnist = False
+    cifar10 = True
+
     input_var = T.tensor4('inputs')
     target_var = T.ivector('targets')
 
     if mnist:
+        print 'loading config for mnist'
         network = build_cnn_mnist(input_var)
         dataset = load_mnist()
+        num_epochs = 500
+        batch_size = 500
+        optim = 'adam'
+        weight_decay = False
+    elif cifar10:
+        print 'loading config for cifar10'
+        network = build_cnn_deep_cifar(input_var)
+        dataset = load_cifar10()
+        num_epochs = 82
+        batch_size = 128
+        optim = 'adam'
+        weight_decay = True
 
     args = {
             'network': network, \
             'dataset': dataset, \
             'input_var': input_var, \
             'target_var': target_var, \
-            'optim': optim
+            'optim': optim, \
+            'dataset': dataset, \
+            'num_epochs': num_epochs, \
+            'weight_decay': weight_decay, \
+            'batch_size': batch_size
             }
     main(args)
