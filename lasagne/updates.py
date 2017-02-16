@@ -686,6 +686,7 @@ def update_eve_other_itr(f_hat, f_prev, d, beta3, k, K):
     d_temp = beta3 * d + (1 - beta3) * r
     return 2.0, f_hat_curr, d_temp, div_result, lower_bound, upper_bound
 
+
 def eve_adam(loss_or_grads, params, loss_prev, learning_rate=0.001, beta1=0.9,
          beta2=0.999, beta3=0.999, epsilon=1e-8, k=0.1, K=10.0):
     """Adam updates
@@ -725,26 +726,19 @@ def eve_adam(loss_or_grads, params, loss_prev, learning_rate=0.001, beta1=0.9,
            arXiv preprint arXiv:1412.6980.
     """
     all_grads = get_or_compute_grads(loss_or_grads, params)
-    t_prev = theano.shared(utils.floatX(0.), name='t_prev')
-    f_prev = theano.shared(utils.floatX(0.), name='f_prev')
-    f_hat = theano.shared(utils.floatX(0.), name='f_hat')
-    lower_bound = theano.shared(utils.floatX(0.), name='lb')
-    upper_bound = theano.shared(utils.floatX(0.), name='ub')
-    d = theano.shared(utils.floatX(1.), name='d')
-    div_res = theano.shared(utils.floatX(0.), name='div_res')
-    branch = theano.shared(utils.floatX(0.), name='branch')
-    updates = OrderedDict()
+    t_prev = theano.shared(utils.floatX(0.), name='t_prev')    
+
+    f_prev, f_hat, d, lower_bound, upper_bound, div_res, branch = initialize_eve_params()
+    
 
     # Using theano constant to prevent upcasting of float32
     one = T.constant(1)
 
     t = t_prev + 1
-    a_t = learning_rate * T.sqrt(one - beta2**t) / (one - beta1**t)
+    updates = get_eve_updates(f_hat, f_prev, d, t, beta3, k, K, lower_bound, upper_bound, div_res, branch)
 
-    updates[branch], updates[f_hat], updates[d], \
-    updates[div_res], updates[lower_bound], updates[upper_bound] =\
-     ifelse(T.gt(t, 3), update_eve_other_itr(f_hat, f_prev, d, beta3, k, K), \
-           update_eve_first_itr(f_hat, f_prev, d))
+    a_t = learning_rate * T.sqrt(one - beta2**t) / (one - beta1**t)
+ 
 
     for param, g_t in zip(params, all_grads):
         value = param.get_value(borrow=True)
@@ -764,6 +758,25 @@ def eve_adam(loss_or_grads, params, loss_prev, learning_rate=0.001, beta1=0.9,
     updates[t_prev] = t
     updates[f_prev] = loss_prev
     return updates, branch, d, f_hat, f_prev, div_res, lower_bound, upper_bound
+
+
+def initialize_eve_params():
+    f_prev = theano.shared(utils.floatX(0.), name='f_prev')
+    f_hat = theano.shared(utils.floatX(0.), name='f_hat')
+    lower_bound = theano.shared(utils.floatX(0.), name='lb')
+    upper_bound = theano.shared(utils.floatX(0.), name='ub')
+    d = theano.shared(utils.floatX(1.), name='d')
+    div_res = theano.shared(utils.floatX(0.), name='div_res')
+    branch = theano.shared(utils.floatX(0.), name='branch')
+    return f_prev, f_hat, d, lower_bound, upper_bound, div_res, branch
+
+def get_eve_updates(f_hat, f_prev, d, t, beta3, k, K, lower_bound, upper_bound, div_res, branch):
+    updates = OrderedDict()
+    updates[branch], updates[f_hat], updates[d], \
+    updates[div_res], updates[lower_bound], updates[upper_bound] =\
+     ifelse(T.gt(t, 3), update_eve_other_itr(f_hat, f_prev, d, beta3, k, K), \
+           update_eve_first_itr(f_hat, f_prev, d))
+    return updates
 
 def norm_constraint(tensor_var, max_norm, norm_axes=None, epsilon=1e-7):
     """Max weight norm constraints and gradient clipping
