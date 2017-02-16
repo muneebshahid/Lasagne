@@ -672,20 +672,67 @@ def adamax(loss_or_grads, params, learning_rate=0.002, beta1=0.9,
     updates[t_prev] = t
     return updates
 
-def update_eve_first_itr(f_hat, f_prev, d):
-    return 1.0, f_prev, 1.0, 0.0, 0.0, 0.0
 
-def update_eve_other_itr(f_hat, f_prev, d, beta3, k, K):
-    lower_bound = T.switch(T.ge(f_prev, f_hat), k + 1.0, 1.0 / (K + 1.0))
-    upper_bound = T.switch(T.ge(f_prev, f_hat), K + 1.0, 1.0 / (k + 1.0))
-    div_result = f_prev / f_hat
-    c = T.minimum(T.maximum(lower_bound, div_result), upper_bound)
-    f_hat_curr = c * f_hat
-    r = T.abs_(f_hat_curr - f_hat) / T.minimum(f_hat_curr, f_hat)
+def smorms3(loss_or_grads, params, learning_rate=0.001, beta1=0.9,
+           beta2=0.999, epsilon=1e-8):
+    """Adam updates
 
-    d_temp = beta3 * d + (1 - beta3) * r
-    return 2.0, f_hat_curr, d_temp, div_result, lower_bound, upper_bound
+    Adam updates implemented as in [1]_.
 
+    Parameters
+    ----------
+    loss_or_grads : symbolic expression or list of expressions
+        A scalar loss expression, or a list of gradient expressions
+    params : list of shared variables
+        The variables to generate update expressions for
+    learning_rate : float
+        Learning rate
+    beta1 : float
+        Exponential decay rate for the first moment estimates.
+    beta2 : float
+        Exponential decay rate for the second moment estimates.
+    epsilon : float
+        Constant for numerical stability.
+
+    Returns
+    -------
+    OrderedDict
+        A dictionary mapping each parameter to its update expression
+
+    Notes
+    -----
+    The paper [1]_ includes an additional hyperparameter lambda. This is only
+    needed to prove convergence of the algorithm and has no practical use
+    (personal communication with the authors), it is therefore omitted here.
+
+    References
+    ----------
+    .. [1] Kingma, Diederik, and Jimmy Ba (2014):
+           Adam: A Method for Stochastic Optimization.
+           arXiv preprint arXiv:1412.6980.
+    """
+    all_grads = get_or_compute_grads(loss_or_grads, params)
+    updates = OrderedDict()
+
+
+    for param, g_t in zip(params, all_grads):
+        value = param.get_value(borrow=True)
+        mem = theano.shared(np.ones(value.shape, dtype=value.dtype),
+                               broadcastable=param.broadcastable, name='mem')
+        g = theano.shared(np.zeros(value.shape, dtype=value.dtype),
+                               broadcastable=param.broadcastable, name='g')
+        g2 = theano.shared(np.zeros(value.shape, dtype=value.dtype),
+                               broadcastable=param.broadcastable, name='g2')
+        r = 1 / (mem + 1.0)
+        gt = (1 - r) * g + r * g_t
+        g2t = (1 - r) * g2 + r * g_t**2
+
+        interm_var = gt * gt / (g2t + epsilon)
+        step = g_t * T.min(learning_rate, interm_var) / (T.sqrt(g2t) + epsilon)
+
+        updates[param] = param - step
+        updates[mem] = 1 + mem * (1 - interm_var)
+    return updates
 
 
 def eve_adamax(loss_or_grads, params, loss_prev, learning_rate=0.001, beta1=0.9,
@@ -824,6 +871,22 @@ def eve_adam(loss_or_grads, params, loss_prev, learning_rate=0.001, beta1=0.9,
     return updates, branch, d, f_hat, f_prev, div_res, lower_bound, upper_bound
 
 
+def update_eve_first_itr(f_hat, f_prev, d):
+    return 1.0, f_prev, 1.0, 0.0, 0.0, 0.0
+
+
+def update_eve_other_itr(f_hat, f_prev, d, beta3, k, K):
+    lower_bound = T.switch(T.ge(f_prev, f_hat), k + 1.0, 1.0 / (K + 1.0))
+    upper_bound = T.switch(T.ge(f_prev, f_hat), K + 1.0, 1.0 / (k + 1.0))
+    div_result = f_prev / f_hat
+    c = T.minimum(T.maximum(lower_bound, div_result), upper_bound)
+    f_hat_curr = c * f_hat
+    r = T.abs_(f_hat_curr - f_hat) / T.minimum(f_hat_curr, f_hat)
+
+    d_temp = beta3 * d + (1 - beta3) * r
+    return 2.0, f_hat_curr, d_temp, div_result, lower_bound, upper_bound
+
+
 def initialize_eve_params():
     f_prev = theano.shared(utils.floatX(0.), name='f_prev')
     f_hat = theano.shared(utils.floatX(0.), name='f_hat')
@@ -833,6 +896,7 @@ def initialize_eve_params():
     div_res = theano.shared(utils.floatX(0.), name='div_res')
     branch = theano.shared(utils.floatX(0.), name='branch')
     return f_prev, f_hat, d, lower_bound, upper_bound, div_res, branch
+
 
 def get_eve_updates(f_hat, f_prev, d, t, loss_prev, beta3, k, K, lower_bound, upper_bound, div_res, branch):
     updates = OrderedDict()
