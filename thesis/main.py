@@ -221,10 +221,10 @@ def main(args):
         l2_penalty = lasagne.regularization.regularize_layer_params(all_layers, lasagne.regularization.l2) * 0.0001
         loss = loss + l2_penalty
 
-    loss_prev = T.dscalar('loss_prev')
+    loss_prev = T.fscalar('loss_prev')
     if args['optim'] == 'eve':
         print 'using eve'
-        updates = lasagne.updates.eve(loss, params, loss_prev)
+        updates, branch, d, f_hat, f_prev, div_res, lb, ub = lasagne.updates.eve_adam(loss, params, loss_prev)
     else:
         print 'using adam'
         updates = lasagne.updates.adam(loss, params)
@@ -245,19 +245,24 @@ def main(args):
     print('Starting Training...')
     for epoch in range(num_epochs):
 
-        # shuffle whole dataset
-        # train_indices = np.arange(100000)
-        # np.random.shuffle(train_indices)
-        # X_train = X_train[train_indices,:,:,:]
-        # Y_train = Y_train[train_indices]
+        if args['dataset'] == 'cifar10':
+            # shuffle whole dataset
+            train_indices = np.arange(100000)
+            np.random.shuffle(train_indices)
+            X_train = X_train[train_indices,:,:,:]
+            Y_train = Y_train[train_indices]
+            print 'shufflled all data'
 
         train_err = 0
         train_batches = 0
         start_time = time.time()
         batch_loss = 0
-
+        d_batch = 0.0
         for batch in iterate_minibatches(X_train, Y_train, args['batch_size'], shuffle=True):
             inputs, targets = batch
+            # print branch.get_value(), d.get_value(), f_hat.get_value(), f_prev.get_value(), div_res.get_value(), lb.get_value(), ub.get_value()
+            if args['optim'] == 'eve':
+                d_batch += d.get_value()
             batch_loss = train_fn(inputs, targets, batch_loss)
             train_err += batch_loss
             train_batches += 1
@@ -282,15 +287,17 @@ def main(args):
         # Then we print the results for this epoch:
         epoch_time_taken = time.time() - start_time
         epoch_train_loss = train_err / train_batches
-
+        d_batch = d_batch / train_batches
         
         print("Epoch {} of {} took {:.3f}s".format(epoch + 1, num_epochs, epoch_time_taken))
         print("  training loss:\t\t{:.6f}".format(epoch_train_loss))
+        print("  d_t:\t\t{:.6f}".format(d_batch))
         print("  validation loss:\t\t{:.6f}".format(epoch_val_loss))
         print("  validation accuracy:\t\t{:.2f} %".format(epoch_val_acc))
 
         with open(train_log_file_name, 'a')  as train_file:
-            train_file.write("{:.3f}".format(epoch_time_taken) + "\t{:.6f}".format(epoch_train_loss) + "\t{:.6f}".format(epoch_val_loss) + "\t{:.2f}".format(epoch_val_acc) + "\n")
+            train_file.write("{:.3f}".format(epoch_time_taken) + "\t{:.6f}".format(epoch_train_loss) + "\t{:.6f}".format(epoch_val_loss) +\
+            "\t\t{:.6f}".format(d_batch) + "\t{:.2f}".format(epoch_val_acc) + "\n")
 
         # Print and write test values
         test_err = 0
@@ -312,7 +319,7 @@ def main(args):
         print("--------\n")
 
 if __name__ == '__main__':
-    mnist = False
+    mnist = True
     cifar10 = True
 
     input_var = T.tensor4('inputs')
@@ -324,7 +331,7 @@ if __name__ == '__main__':
         dataset = load_mnist()
         num_epochs = 500
         batch_size = 500
-        optim = 'adam'
+        optim = 'eve'
         weight_decay = False
     elif cifar10:
         print 'loading config for cifar10'
@@ -332,7 +339,7 @@ if __name__ == '__main__':
         dataset = load_cifar10()
         num_epochs = 82
         batch_size = 128
-        optim = 'adam'
+        optim = 'eve'
         weight_decay = True
 
     args = {
