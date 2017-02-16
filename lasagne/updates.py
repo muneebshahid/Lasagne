@@ -687,6 +687,72 @@ def update_eve_other_itr(f_hat, f_prev, d, beta3, k, K):
     return 2.0, f_hat_curr, d_temp, div_result, lower_bound, upper_bound
 
 
+
+def eve_adamax(loss_or_grads, params, loss_prev, learning_rate=0.001, beta1=0.9,
+         beta2=0.999, beta3=0.999, epsilon=1e-8, k=0.1, K=10.0):
+    """Adamax updates
+
+    Adamax updates implemented as in [1]_. This is a variant of of the Adam
+    algorithm based on the infinity norm.
+
+    Parameters
+    ----------
+    loss_or_grads : symbolic expression or list of expressions
+        A scalar loss expression, or a list of gradient expressions
+    params : list of shared variables
+        The variables to generate update expressions for
+    learning_rate : float
+        Learning rate
+    beta1 : float
+        Exponential decay rate for the first moment estimates.
+    beta2 : float
+        Exponential decay rate for the weighted infinity norm estimates.
+    epsilon : float
+        Constant for numerical stability.
+
+    Returns
+    -------
+    OrderedDict
+        A dictionary mapping each parameter to its update expression
+
+    References
+    ----------
+    .. [1] Kingma, Diederik, and Jimmy Ba (2014):
+           Adam: A Method for Stochastic Optimization.
+           arXiv preprint arXiv:1412.6980.
+    """
+    all_grads = get_or_compute_grads(loss_or_grads, params)
+    t_prev = theano.shared(utils.floatX(0.), name='t_prev')    
+    f_prev, f_hat, d, lower_bound, upper_bound, div_res, branch = initialize_eve_params()
+    
+
+    # Using theano constant to prevent upcasting of float32
+    one = T.constant(1)
+
+    t = t_prev + 1
+    updates = get_eve_updates(f_hat, f_prev, d, t, loss_prev, beta3, k, K, lower_bound, upper_bound, div_res, branch)
+    a_t = learning_rate/(one-beta1**t)
+
+    for param, g_t in zip(params, all_grads):
+        value = param.get_value(borrow=True)
+        m_prev = theano.shared(np.zeros(value.shape, dtype=value.dtype),
+                               broadcastable=param.broadcastable)
+        u_prev = theano.shared(np.zeros(value.shape, dtype=value.dtype),
+                               broadcastable=param.broadcastable)
+
+        m_t = beta1*m_prev + (one-beta1)*g_t
+        u_t = T.maximum(beta2*u_prev, abs(g_t))
+        step = a_t*m_t/(d * (u_t + epsilon))
+
+        updates[m_prev] = m_t
+        updates[u_prev] = u_t
+        updates[param] = param - step
+
+    updates[t_prev] = t
+    return updates, branch, d, f_hat, f_prev, div_res, lower_bound, upper_bound
+
+
+
 def eve_adam(loss_or_grads, params, loss_prev, learning_rate=0.001, beta1=0.9,
          beta2=0.999, beta3=0.999, epsilon=1e-8, k=0.1, K=10.0):
     """Adam updates
@@ -727,7 +793,6 @@ def eve_adam(loss_or_grads, params, loss_prev, learning_rate=0.001, beta1=0.9,
     """
     all_grads = get_or_compute_grads(loss_or_grads, params)
     t_prev = theano.shared(utils.floatX(0.), name='t_prev')    
-
     f_prev, f_hat, d, lower_bound, upper_bound, div_res, branch = initialize_eve_params()
     
 
@@ -735,10 +800,10 @@ def eve_adam(loss_or_grads, params, loss_prev, learning_rate=0.001, beta1=0.9,
     one = T.constant(1)
 
     t = t_prev + 1
-    updates = get_eve_updates(f_hat, f_prev, d, t, beta3, k, K, lower_bound, upper_bound, div_res, branch)
+    updates = get_eve_updates(f_hat, f_prev, d, t, loss_prev, beta3, k, K, lower_bound, upper_bound, div_res, branch)
 
     a_t = learning_rate * T.sqrt(one - beta2**t) / (one - beta1**t)
- 
+    
 
     for param, g_t in zip(params, all_grads):
         value = param.get_value(borrow=True)
@@ -756,7 +821,6 @@ def eve_adam(loss_or_grads, params, loss_prev, learning_rate=0.001, beta1=0.9,
         updates[param] = param - step
 
     updates[t_prev] = t
-    updates[f_prev] = loss_prev
     return updates, branch, d, f_hat, f_prev, div_res, lower_bound, upper_bound
 
 
@@ -770,12 +834,13 @@ def initialize_eve_params():
     branch = theano.shared(utils.floatX(0.), name='branch')
     return f_prev, f_hat, d, lower_bound, upper_bound, div_res, branch
 
-def get_eve_updates(f_hat, f_prev, d, t, beta3, k, K, lower_bound, upper_bound, div_res, branch):
+def get_eve_updates(f_hat, f_prev, d, t, loss_prev, beta3, k, K, lower_bound, upper_bound, div_res, branch):
     updates = OrderedDict()
     updates[branch], updates[f_hat], updates[d], \
     updates[div_res], updates[lower_bound], updates[upper_bound] =\
      ifelse(T.gt(t, 3), update_eve_other_itr(f_hat, f_prev, d, beta3, k, K), \
-           update_eve_first_itr(f_hat, f_prev, d))
+           update_eve_first_itr(f_hat, f_prev, d))    
+    updates[f_prev] = loss_prev
     return updates
 
 def norm_constraint(tensor_var, max_norm, norm_axes=None, epsilon=1e-7):

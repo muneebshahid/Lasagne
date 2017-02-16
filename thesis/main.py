@@ -222,9 +222,15 @@ def main(args):
         loss = loss + l2_penalty
 
     loss_prev = T.fscalar('loss_prev')
-    if args['optim'] == 'eve':
-        print 'using eve'
+    if args['optim'] == 'eve_adam':
+        print args['optim']
         updates, branch, d, f_hat, f_prev, div_res, lb, ub = lasagne.updates.eve_adam(loss, params, loss_prev)
+    elif args['optim'] == 'eve_adamax':
+        print args['optim']
+        updates, branch, d, f_hat, f_prev, div_res, lb, ub = lasagne.updates.eve_adamax(loss, params, loss_prev)
+    elif args['optim'] == 'adamax':
+        print 'using adamax'
+        updates = lasagne.updates. adamax(loss, params)
     else:
         print 'using adam'
         updates = lasagne.updates.adam(loss, params)
@@ -260,8 +266,8 @@ def main(args):
         d_batch = 0.0
         for batch in iterate_minibatches(X_train, Y_train, args['batch_size'], shuffle=True):
             inputs, targets = batch
-            # print branch.get_value(), d.get_value(), f_hat.get_value(), f_prev.get_value(), div_res.get_value(), lb.get_value(), ub.get_value()
-            if args['optim'] == 'eve':
+            # print 'branch: ', branch.get_value(), ' d: ', d.get_value(), ' f_hat:', f_hat.get_value(), ' f_prev: ', f_prev.get_value(), ' div_res: ', div_res.get_value(), ' lb: ', lb.get_value(), ' ub: ', ub.get_value()
+            if 'eve' in args['optim']:
                 d_batch += d.get_value()
             batch_loss = train_fn(inputs, targets, batch_loss)
             train_err += batch_loss
@@ -319,7 +325,7 @@ def main(args):
         print("--------\n")
 
 if __name__ == '__main__':
-    mnist = True
+    mnist = False
     cifar10 = True
 
     input_var = T.tensor4('inputs')
@@ -331,7 +337,7 @@ if __name__ == '__main__':
         dataset = load_mnist()
         num_epochs = 500
         batch_size = 500
-        optim = 'eve'
+        optim = 'adamax'
         weight_decay = False
     elif cifar10:
         print 'loading config for cifar10'
@@ -339,7 +345,7 @@ if __name__ == '__main__':
         dataset = load_cifar10()
         num_epochs = 82
         batch_size = 128
-        optim = 'eve'
+        optim = 'adamax'
         weight_decay = True
 
     args = {
